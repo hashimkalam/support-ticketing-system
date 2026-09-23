@@ -6,11 +6,13 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.database import engine, get_db
+from app.database import create_tables, engine, get_db
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    # MVP only: swap for Alembic once the schema starts evolving.
+    create_tables()
     yield
     engine.dispose()
 

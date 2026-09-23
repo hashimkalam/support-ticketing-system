@@ -29,6 +29,12 @@ class Base(DeclarativeBase):
     pass
 
 
+def create_tables() -> None:
+    from app import models  # imported late: models depend on Base
+
+    Base.metadata.create_all(bind=engine)
+
+
 def get_db() -> Generator[Session, None, None]:
     session = SessionLocal()
     try:
