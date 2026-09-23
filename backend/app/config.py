@@ -8,6 +8,7 @@ class Settings(BaseSettings):
 
     app_name: str = "Support Ticketing API"
     app_version: str = "0.1.0"
+    api_prefix: str = "/api/v1"
     debug: bool = False
 
     database_url: str = "postgresql+psycopg2://tickets:tickets@localhost:5432/tickets"

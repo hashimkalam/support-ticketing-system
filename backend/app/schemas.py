@@ -53,6 +53,13 @@ class TicketResponse(TicketBase):
     updated_at: datetime
 
 
+class TicketListResponse(BaseModel):
+    items: list[TicketResponse]
+    total_count: int
+    skip: int
+    limit: int
+
+
 class TicketClaim(BaseModel):
     assigned_to: EmailStr
 

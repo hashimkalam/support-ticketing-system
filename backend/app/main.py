@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import create_tables, engine, get_db
+from app.routers import tickets
 
 
 @asynccontextmanager
@@ -23,6 +24,8 @@ app = FastAPI(
     debug=settings.debug,
     lifespan=lifespan,
 )
+
+app.include_router(tickets.router, prefix=settings.api_prefix)
 
 app.add_middleware(
     CORSMiddleware,
