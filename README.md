@@ -16,6 +16,8 @@ TypeScript 6 · Tailwind CSS 4 · Docker Compose
 ## Table of contents
 
 - [Quick start](#quick-start)
+- [Running the tests](#running-the-tests)
+- [Configuration](#configuration)
 - [What you get](#what-you-get)
 - [Repository layout](#repository-layout)
 - [API reference](#api-reference)
@@ -32,6 +34,7 @@ TypeScript 6 · Tailwind CSS 4 · Docker Compose
   - [9. Error semantics the frontend can branch on](#9-error-semantics-the-frontend-can-branch-on)
   - [10. Schema creation: create_all for the MVP](#10-schema-creation-create_all-for-the-mvp)
   - [11. Frontend state: a discriminated union, not a thrown conflict](#11-frontend-state-a-discriminated-union-not-a-thrown-conflict)
+  - [12. Local evaluation ergonomics: idempotent demo seeding](#12-local-evaluation-ergonomics-idempotent-demo-seeding)
 - [Local development without Docker](#local-development-without-docker)
 - [Resetting the database](#resetting-the-database)
 - [Known limitations](#known-limitations)
@@ -103,6 +106,69 @@ claiming (authentication is explicitly out of scope). It persists in `localStora
 
 Stop everything with `Ctrl+C`, or `docker compose down`.
 
+### 5. Run the test suite (optional)
+
+```bash
+docker compose --profile test run --rm tests
+```
+
+See [Running the tests](#running-the-tests) for what it covers.
+
+---
+
+## Running the tests
+
+```bash
+docker compose --profile test run --rm tests
+```
+
+```
+....................                                                     [100%]
+20 passed in 1.37s
+```
+
+The suite runs against its own database (`tickets_test`) on the same Postgres container, and
+`conftest.py` **refuses to start** if the database name does not end in `_test` — a truncation bug in
+a test can never cost you development data. A run creates the database and the schema itself, and
+truncates the table between tests.
+
+It is declared as a compose service behind the `test` profile, so a plain `docker compose up` never
+runs it, and the runtime image stays free of test dependencies (`INSTALL_DEV=true` installs
+`requirements-dev.txt` into the test image only).
+
+| File | Covers |
+| --- | --- |
+| `tests/test_tickets_api.py` | Create defaults, tag normalisation, validation rejections, fetch-by-id, pagination windows and ordering, paging bounds |
+| `tests/test_claim_api.py` | Successful claim, `409` against the owner, idempotent replays, case-insensitive match, resolved tickets, `404`, malformed input |
+| `tests/test_claim_concurrency.py` | The race itself: 16 simultaneous claims, and 16 simultaneous retries by one agent |
+
+The concurrency test is the one that matters. It is not a smoke test that would pass regardless: the
+assertions are written so that **replacing the atomic `UPDATE` with a read-then-write implementation
+makes it fail**, which is how it was validated — that mutation produced 15 "winners" for a single
+ticket:
+
+```
+E  AssertionError: expected exactly one winner, got ['agent0@example.com', 'agent2@example.com',
+   'agent12@example.com', 'agent7@example.com', ... 15 total']
+```
+
+---
+
+## Configuration
+
+Everything is read from the environment (or `.env`), and every value has a working default.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | `tickets` | Postgres credentials and the database Compose creates |
+| `DATABASE_URL` | `postgresql+psycopg2://tickets:tickets@db:5432/tickets` | Set by Compose; point it elsewhere to use another server |
+| `CORS_ORIGINS` | `["http://localhost:5173","http://127.0.0.1:5173"]` | JSON list of browser origins allowed to call the API |
+| `SEED_DEMO_DATA` | `true` in Compose, `false` in the app | Insert 16 demo tickets when the table is empty ([§12](#12-local-evaluation-ergonomics-idempotent-demo-seeding)) |
+| `DEBUG` | `false` | Verbose framework behaviour. With `true`, unhandled errors return a **traceback to the client** instead of the JSON envelope |
+| `VITE_API_BASE_URL` | `http://localhost:8000/api/v1` | The API base URL the **browser** calls |
+
+`CORS_ORIGINS` must be valid JSON when overridden, because it is parsed as a list.
+
 ---
 
 ## What you get
@@ -110,9 +176,12 @@ Stop everything with `Ctrl+C`, or `docker compose down`.
 **Backend**
 - `POST /api/v1/tickets` — create a ticket (validated, tags normalised)
 - `GET /api/v1/tickets` — paginated directory with `total_count` for navigation controls
+- `GET /api/v1/tickets/{id}` — fetch a single ticket
 - `POST /api/v1/tickets/{id}/claim` — atomically assign a ticket to an agent
 - `GET /health`, `GET /health/db` — split liveness/readiness probes
 - CORS, connection pooling, dependency-injected sessions, typed settings from the environment
+- A global error handler that returns a stable JSON envelope instead of leaking tracebacks
+- 20 pytest tests, including a 16-thread regression test for the claim race
 
 **Frontend**
 - Persistent "current agent" email in React context, surfaced through a header input
@@ -120,6 +189,22 @@ Stop everything with `Ctrl+C`, or `docker compose down`.
 - Inline expandable detail view (description, tags, status, assignee, timestamps)
 - Claim action that switches on a discriminated union and surfaces conflicts as an alert
 - Tailwind CSS 4, no config file needed, Vite HMR inside Docker
+
+### Requirements traceability
+
+| Requirement | Implementation | Verification |
+| --- | --- | --- |
+| Ticket creation | `POST /api/v1/tickets` → `routers/tickets.py` | `tests/test_tickets_api.py` |
+| Ticket retrieval over a large table | `GET /api/v1/tickets` with `skip`/`limit` + `total_count` ([§2](#2-pagination-for-the-list-view)) | Pagination and ordering tests |
+| Assignment, once only, first agent wins | Conditional `UPDATE ... WHERE assigned_to IS NULL` ([§3](#3-concurrency-claiming-without-races)) | `tests/test_claim_concurrency.py` |
+| Email input for the "current user" | `Header.tsx` + `AgentProvider` (persisted in `localStorage`) | Live UI |
+| List view with navigation controls | `TicketList.tsx` + `Pagination.tsx` driving server-side paging | Live UI, 16 seeded rows |
+| Detail view (description, tags) | Inline expansion via `TicketDetail.tsx` | Live UI |
+| Claim an unassigned ticket | Claim button → `claimTicket()` → union outcome | Live UI + API tests |
+| README with database init and startup | This file, steps 1–4 | Executed end to end |
+| `docker-compose.yml` for local evaluation | `db` + `api` + `web`, plus a `tests` profile | `docker compose config` |
+| Process visible in Git history | Six commits, one per increment | `git log --oneline` |
+| Production-grade hygiene (implicit) | Error envelope, logging, pooling, constraints, indexes, tests ([§7](#7-integrity-the-database-enforces-not-the-application)–[§12](#12-local-evaluation-ergonomics-idempotent-demo-seeding)) | Suite + live checks |
 
 ---
 
@@ -161,6 +246,7 @@ All ticket endpoints are served under `/api/v1`.
 | --- | --- | --- |
 | `POST` | `/api/v1/tickets` | Create a ticket. Always starts `open` and unassigned. |
 | `GET` | `/api/v1/tickets?skip=0&limit=20` | Paginated list, newest first. `limit` is capped at 100. |
+| `GET` | `/api/v1/tickets/{id}` | Fetch a single ticket. `404` when it does not exist. |
 | `POST` | `/api/v1/tickets/{id}/claim` | Assign an agent. Returns the updated ticket. |
 
 ### Create a ticket
@@ -211,6 +297,14 @@ curl -s 'http://localhost:8000/api/v1/tickets?skip=0&limit=10'
 `total_count` is the count of **all** tickets, not the page — that is what the UI needs to render
 "Showing 1–10 of 14" and to know when to disable **Next**.
 
+### Fetch a single ticket
+
+```bash
+curl -s http://localhost:8000/api/v1/tickets/8e7be486-1f0e-4bac-bbe0-d0d993ce8ab1
+```
+
+Unknown IDs return `404 {"detail": "Ticket not found"}`.
+
 ### Claim a ticket
 
 ```bash
@@ -229,7 +323,7 @@ ticket transitions are described in [§4](#4-idempotency-for-same-agent-retries)
 | `422` | Payload fails validation — title shorter than 3 characters, unknown `priority`, empty description, non-email `assigned_to`, `status` sent on create, `limit` above 100, `skip` negative |
 | `404` | Claiming a ticket ID that does not exist |
 | `409` | Claiming a ticket that another agent already owns |
-| `503`/`500` | Database unreachable or an unhandled server error |
+| `500` | Unhandled server error — always `{"detail": "Internal server error."}`; the traceback goes to the logs, never to the client |
 
 ---
 
@@ -429,6 +523,11 @@ database row:        in_progress | agent14@example.com   ← matches the single 
 
 One winner, fifteen clean conflicts, and the persisted row agrees with the response.
 
+That check is now a permanent regression test rather than a one-off script —
+`backend/tests/test_claim_concurrency.py`, runnable with `docker compose --profile test run --rm
+tests`. It was validated by mutation: against a read-then-write implementation it fails with 15
+winners, so it genuinely detects the race instead of passing by construction.
+
 ### 4. Idempotency for same-agent retries
 
 The atomic claim solves mutual exclusion, but it introduces a user-facing edge case. Because the
@@ -460,7 +559,8 @@ that follows is guaranteed to see committed state — there is no window in whic
 misread a rival claim as its own.
 
 Verified: 16 concurrent retries by the same agent → `{200: 16}`, all reporting the same assignee,
-with the underlying row written exactly once.
+with the underlying row written exactly once. Both properties are covered by
+`tests/test_claim_api.py` and `tests/test_claim_concurrency.py`.
 
 ### 5. Enum storage: VARCHAR + CHECK, not native enums
 
@@ -564,6 +664,11 @@ The engine is disposed on application shutdown, releasing pooled connections cle
 
 ### 9. Error semantics the frontend can branch on
 
+- **Nothing internal ever reaches the client.** A global `Exception` handler returns
+  `500 {"detail": "Internal server error."}` and logs the traceback server-side with
+  `logger.exception`. This matters more than it looks: with `DEBUG=true`, Starlette installs its own
+  debug response *ahead of* any registered handler and returns a full stack trace — table names,
+  file paths, the lot — so the default is `DEBUG=false` and the handler is the only path out.
 - **`404` before `409`, always.** A missing ticket and a taken ticket both mean "zero rows updated",
   but they are different worlds to the client (see [§3](#3-concurrency-claiming-without-races)).
 - **Validation errors are `422` with field-level detail.** Pydantic constraints (title ≥ 3 chars,
@@ -635,6 +740,34 @@ if (requestId !== latestRequest.current) return  // a newer request already won
 The same instinct as the atomic claim, in a different layer: make the stale writer detectable rather
 than hoping it doesn't happen.
 
+### 12. Local evaluation ergonomics: idempotent demo seeding
+
+Opening this stack against an empty database shows an empty list — and the list, detail, and claim
+flows are the entire point of the exercise. So the app can seed 16 realistic tickets on startup:
+
+```python
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    create_tables()
+    if settings.seed_demo_data:
+        logger.info("Seeded %d demo tickets.", seed_demo_tickets())
+    yield
+    engine.dispose()
+```
+
+Three properties keep it from becoming a liability:
+
+1. **Idempotent.** `seed_demo_tickets()` counts the rows first and returns `0` if the table is not
+   empty, so restarts and reloads never duplicate data. It can also be run directly:
+   `docker compose exec api python -m app.seed`.
+2. **Off in the application, on in the Compose stack.** `Settings.seed_demo_data` defaults to
+   `false`, and only `.env.example` / `docker-compose.yml` opt in. A real deployment pointed at this
+   image gets an empty database unless someone explicitly asks for demo rows.
+3. **The demo rows are a hazard test, not filler.** They include two `resolved` tickets owned by
+   other agents, which is how a reviewer sees all three status badges and the "already owned"
+   rendering without needing a resolve endpoint first. They also give the queue enough rows to make
+   the pagination controls non-trivial: 16 tickets with a page size of 10, so page two exists.
+
 ---
 
 ## Local development without Docker
@@ -696,6 +829,8 @@ Honest scope boundaries, in rough priority order:
 - **No authentication or authorization.** The header email is self-declared identity — deliberately
   out of scope for this MVP. Anyone can claim a ticket as anyone until an auth layer lands, and the
   `assigned_to` field is trusted as-is.
+- **The Compose stack seeds demo rows by default.** Intentional for evaluation, controlled by
+  `SEED_DEMO_DATA=false` ([§12](#12-local-evaluation-ergonomics-idempotent-demo-seeding)).
 - **No auto-refresh.** The list does not poll. If another agent claims a ticket you're looking at, you
   learn about it when you click Claim and receive the `409` — and the conflict path is exactly the
   recovery for that.

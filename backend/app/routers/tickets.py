@@ -1,3 +1,4 @@
+import logging
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status as http_status
@@ -7,6 +8,8 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models import Status, Ticket
 from app.schemas import TicketClaim, TicketCreate, TicketListResponse, TicketResponse
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/tickets", tags=["tickets"])
 
@@ -44,6 +47,16 @@ def list_tickets(
     )
 
 
+@router.get("/{ticket_id}", response_model=TicketResponse)
+def get_ticket(ticket_id: UUID, db: Session = Depends(get_db)) -> Ticket:
+    ticket = db.get(Ticket, ticket_id)
+    if ticket is None:
+        raise HTTPException(
+            status_code=http_status.HTTP_404_NOT_FOUND, detail="Ticket not found"
+        )
+    return ticket
+
+
 @router.post("/{ticket_id}/claim", response_model=TicketResponse)
 def claim_ticket(
     ticket_id: UUID, payload: TicketClaim, db: Session = Depends(get_db)
@@ -66,6 +79,7 @@ def claim_ticket(
     ticket = db.execute(stmt).scalar_one_or_none()
     if ticket is not None:
         db.commit()
+        logger.info("Ticket %s claimed by %s", ticket.id, ticket.assigned_to)
         return ticket
 
     db.rollback()
@@ -81,6 +95,11 @@ def claim_ticket(
     if existing.assigned_to and existing.assigned_to.lower() == payload.assigned_to.lower():
         return existing
 
+    logger.info(
+        "Rejected claim on ticket %s: already owned by %s",
+        ticket_id,
+        existing.assigned_to,
+    )
     raise HTTPException(
         status_code=http_status.HTTP_409_CONFLICT,
         detail=f"Ticket already assigned to {existing.assigned_to}",

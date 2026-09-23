@@ -1,0 +1,4 @@
+# Test-only dependencies. Installed into the `tests` image via INSTALL_DEV=true,
+# never into the runtime image.
+pytest==8.3.4
+httpx==0.28.1
