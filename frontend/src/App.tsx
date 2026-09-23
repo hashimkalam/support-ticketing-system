@@ -1,122 +1,120 @@
-import { useState } from 'react'
-import heroImg from './assets/hero.png'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import './App.css'
+import { useCallback, useState } from 'react'
+import { ApiError } from './api/client'
+import { claimTicket } from './api/tickets'
+import Header from './components/Header'
+import Pagination from './components/Pagination'
+import TicketList from './components/TicketList'
+import Toast from './components/Toast'
+import { DEFAULT_PAGE_SIZE } from './constants'
+import { useAgent } from './context/AgentContext'
+import AgentProvider from './context/AgentProvider'
+import { useTickets } from './hooks/useTickets'
+import type { Ticket, ToastMessage } from './types'
 
-function App() {
-  const [count, setCount] = useState(0)
+function TicketWorkspace() {
+  const { email, hasValidEmail } = useAgent()
+  const {
+    tickets,
+    totalCount,
+    page,
+    pageCount,
+    rangeStart,
+    rangeEnd,
+    isLoading,
+    error,
+    canGoNext,
+    canGoPrevious,
+    goToNextPage,
+    goToPreviousPage,
+    reload,
+    replaceTicket,
+  } = useTickets(DEFAULT_PAGE_SIZE)
+
+  const [claimingId, setClaimingId] = useState<string | null>(null)
+  const [toast, setToast] = useState<ToastMessage | null>(null)
+
+  const dismissToast = useCallback(() => setToast(null), [])
+
+  async function handleClaim(ticket: Ticket) {
+    setClaimingId(ticket.id)
+    try {
+      const result = await claimTicket(ticket.id, email.trim())
+
+      switch (result.outcome) {
+        case 'claimed':
+          // The API returns the updated row, so no refetch is needed.
+          replaceTicket(result.ticket)
+          setToast({
+            kind: 'success',
+            message: `“${result.ticket.title}” is now assigned to you.`,
+          })
+          break
+
+        case 'conflict':
+          setToast({ kind: 'error', message: result.message })
+          // Fire and forget: losing the race means our snapshot is stale, but the
+          // alert shouldn't wait on the refetch to render.
+          void reload()
+          break
+      }
+    } catch (cause) {
+      setToast({
+        kind: 'error',
+        message:
+          cause instanceof ApiError ? cause.detail : 'Could not claim this ticket.',
+      })
+    } finally {
+      setClaimingId(null)
+    }
+  }
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.tsx</code> and save to test <code>HMR</code>
+    <div className="min-h-screen bg-slate-50 text-slate-900">
+      <Header />
+
+      <main className="mx-auto max-w-5xl px-6 py-8">
+        <div className="mb-4">
+          <h2 className="text-base font-semibold">Ticket queue</h2>
+          <p className="text-sm text-slate-500">
+            {isLoading && tickets.length === 0
+              ? 'Loading…'
+              : `${totalCount} ticket${totalCount === 1 ? '' : 's'} total`}
           </p>
         </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
 
-      <div className="ticks"></div>
+        <TicketList
+          tickets={tickets}
+          isLoading={isLoading}
+          error={error}
+          claimingId={claimingId}
+          canClaim={hasValidEmail}
+          onClaim={handleClaim}
+          onRetry={reload}
+        />
 
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
+        <Pagination
+          page={page}
+          pageCount={pageCount}
+          totalCount={totalCount}
+          rangeStart={rangeStart}
+          rangeEnd={rangeEnd}
+          isLoading={isLoading}
+          canGoNext={canGoNext}
+          canGoPrevious={canGoPrevious}
+          onNext={goToNextPage}
+          onPrevious={goToPreviousPage}
+        />
+      </main>
 
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
+      {toast && <Toast toast={toast} onDismiss={dismissToast} />}
+    </div>
   )
 }
 
-export default App
+export default function App() {
+  return (
+    <AgentProvider>
+      <TicketWorkspace />
+    </AgentProvider>
+  )
+}
